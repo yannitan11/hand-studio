@@ -1,7 +1,11 @@
 // HÄND STUDIO — orchestration: camera → tracking → gesture state machine →
-// effects + HUD. One mirrored render loop. Vanilla ES modules, no build.
+// freeze patches + HUD. One mirrored render loop. Vanilla ES modules, no build.
+//
+// Core loop (reference recording, first 8s):
+//   two hands frame a rect (RESIZING) → both pinch → region freezes as a
+//   pinned patch (FROZEN, survives 0 hands) → fists (or R) reset.
 
-import { BRAND, GESTURE, FREEZE, FOCUS, DISTORT, MODES, TICKER, STATUS } from './config.js';
+import { BRAND, GESTURE, FRAME, TICKER, STATUS } from './config.js';
 import { startCamera, CameraError } from './camera.js';
 import { loadTracker, detect } from './tracking.js';
 import * as G from './gestures.js';
@@ -16,7 +20,7 @@ const el = (id) => document.getElementById(id);
 const startScreen = el('startScreen');
 const errorScreen = el('errorScreen');
 const loading = el('loading');
-el('startScreen').querySelector('.eyebrow').textContent = `${BRAND.watermark} — ${BRAND.build}`;
+startScreen.querySelector('.eyebrow').textContent = `${BRAND.watermark} — ${BRAND.build}`;
 
 // ── State ──
 const fx = new Effects();
@@ -25,22 +29,12 @@ let running = false;
 let trackerReady = false;
 
 let status = STATUS.IDLE;
-let brush = MODES.PIXEL; // 1 → PIXEL, 2 → SHIFT
-let pinchActive = false;
+let bothPinched = false; // latched until both hands release
 let pinchHold = 0;
-let manualFreeze = false;
+let fistHold = 0;
 
-let focusPx = 0.3; // set on resize
-let focusTarget = 0.3;
-let showFocusUntil = 0;
-
-let brushRadius = 0;
-let dwellMs = 0;
-let lastTip = null; // {x,y}
-let prevWristY = null;
-
-// mouse fallback
-let mouse = { x: 0, y: 0, down: false, active: false };
+// mouse/touch fallback: drag a rect, release to freeze it
+let drag = null; // {x0, y0, x1, y1} in device px
 
 // fps
 let fps = 0;
@@ -49,14 +43,10 @@ let lastNow = performance.now();
 // ── Sizing ──
 function resize() {
   dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = Math.round(window.innerWidth * dpr);
-  const h = Math.round(window.innerHeight * dpr);
-  canvas.width = w;
-  canvas.height = h;
-  fx.resize(w, h);
+  canvas.width = Math.round(window.innerWidth * dpr);
+  canvas.height = Math.round(window.innerHeight * dpr);
+  fx.resize(canvas.width, canvas.height);
   HUD.setScale(dpr);
-  const minDim = Math.min(w, h);
-  focusPx = focusTarget = FOCUS.start * minDim;
 }
 window.addEventListener('resize', resize);
 
@@ -74,128 +64,109 @@ function makeMapper() {
   return (p) => ({ x: w - (ox + p.x * dw), y: oy + p.y * dh });
 }
 
-// ── Gesture → state, per frame ──
-function step(now, dt) {
+function rectFromPoints(a, b) {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return { x, y, w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) };
+}
+
+// ── Per-frame step ──
+function step(now) {
   const det = trackerReady && video.readyState >= 2 ? detect(video, now) : null;
   const hands = det?.hands || [];
   const map = makeMapper();
   const handsPx = hands.map((lm) => lm.map(map));
-  const primary = hands[0];
 
-  // Pinch → freeze (hold while pinched), with hysteresis.
-  if (primary) {
-    const amt = G.pinchAmount(primary);
-    if (!pinchActive) {
-      if (amt < GESTURE.pinchRatio) {
-        pinchHold++;
-        if (pinchHold >= FREEZE.holdFrames) {
-          pinchActive = true;
-          fx.freeze();
-        }
-      } else pinchHold = 0;
-    } else if (amt > GESTURE.pinchReleaseRatio) {
-      pinchActive = false;
-      pinchHold = 0;
-      if (!manualFreeze) fx.unfreeze();
-    }
-  } else {
-    pinchHold = 0;
-    if (pinchActive && !manualFreeze) {
-      pinchActive = false;
-      fx.unfreeze();
-    }
-  }
-
-  // Point-up → resize focus reticle from vertical hand motion.
-  let resizing = false;
-  if (primary) {
-    const wristY = map(primary[G_WRIST]).y;
-    if (G.isPointUp(primary) && prevWristY != null) {
-      const dy = wristY - prevWristY; // + = down
-      if (Math.abs(dy) > GESTURE.resizeVelocity * dpr) {
-        const minDim = Math.min(canvas.width, canvas.height);
-        focusTarget = clamp(
-          focusTarget - dy * FOCUS.gain * canvas.height,
-          FOCUS.min * minDim,
-          FOCUS.max * minDim
-        );
-        resizing = true;
-        showFocusUntil = now + 900;
-      }
-    }
-    prevWristY = wristY;
-  } else {
-    prevWristY = null;
-  }
-
-  // Distortion brush: index-point (or mouse) paints onto the frozen/live frame.
-  let painting = false;
-  let tip = null;
-  if (primary && G.isPointingBrush(primary)) {
-    tip = map(primary[G.INDEX_TIP]);
-  } else if (mouse.down) {
-    tip = { x: mouse.x * dpr, y: mouse.y * dpr };
-  }
-
-  // render base first so the brush samples the current frame
   fx.renderBase(video);
 
-  if (tip) {
-    painting = true;
-    const speed = lastTip ? Math.hypot(tip.x - lastTip.x, tip.y - lastTip.y) : 0;
-    if (speed < GESTURE.dwellSpeed * dpr) dwellMs += dt;
-    else dwellMs = 0;
-    const intensity = clamp(dwellMs / DISTORT.dwellRampMs, 0, 1);
-    brushRadius = lerp(brushRadius || DISTORT.radius * dpr, DISTORT.radius * dpr, DISTORT.radiusEase);
-    fx.paint(tip.x, tip.y, brushRadius, brush, intensity);
-  } else {
-    dwellMs = 0;
-  }
-  lastTip = tip;
+  // ── Two-hand framing rect ──
+  let frameRect = null;
+  let framing = false;
+  if (hands.length === 2) {
+    const gripA = map(G.gripPoint(hands[0]));
+    const gripB = map(G.gripPoint(hands[1]));
+    frameRect = rectFromPoints(gripA, gripB);
+    const min = FRAME.minSizePx * dpr;
+    framing = frameRect.w > min && frameRect.h > min;
 
-  // ── Status resolution (priority) ──
-  if (pinchActive || (manualFreeze && fx.isFrozen)) status = STATUS.FROZEN;
-  else if (painting) status = STATUS.DISTORTING;
-  else if (resizing) status = STATUS.RESIZING;
+    // both hands pinched (with hysteresis + a short hold) → capture
+    const aAmt = G.pinchAmount(hands[0]);
+    const bAmt = G.pinchAmount(hands[1]);
+    const pinchedNow = aAmt < GESTURE.pinchRatio && bAmt < GESTURE.pinchRatio;
+    const releasedNow =
+      aAmt > GESTURE.pinchReleaseRatio && bAmt > GESTURE.pinchReleaseRatio;
+
+    if (!bothPinched && framing && pinchedNow) {
+      pinchHold++;
+      if (pinchHold >= FRAME.captureHoldFrames) {
+        fx.freezeRegion(frameRect, now);
+        bothPinched = true; // latch: no re-capture until both release
+        pinchHold = 0;
+      }
+    } else if (!pinchedNow) {
+      pinchHold = 0;
+    }
+    if (bothPinched && releasedNow) bothPinched = false;
+  } else {
+    pinchHold = 0;
+    bothPinched = false;
+  }
+
+  // ── Fists → reset ──
+  if (fx.hasPatches && hands.length > 0 && hands.every((lm) => G.isFist(lm))) {
+    fistHold++;
+    if (fistHold >= GESTURE.fistHoldFrames) {
+      fx.reset();
+      fistHold = 0;
+    }
+  } else {
+    fistHold = 0;
+  }
+
+  // ── Status resolution ──
+  if (framing) status = STATUS.RESIZING;
+  else if (fx.hasPatches) status = STATUS.FROZEN;
   else if (hands.length) status = STATUS.TRACKING;
   else status = STATUS.IDLE;
 
   // ── Draw ──
   fx.compositeTo(ctx);
-
-  if (painting && tip) {
-    const block = DISTORT.blockMin + (DISTORT.blockMax - DISTORT.blockMin) * clamp(dwellMs / DISTORT.dwellRampMs, 0, 1);
-    HUD.drawBrushGrid(ctx, tip.x, tip.y, brushRadius, brush === MODES.PIXEL ? block : 12);
-  }
-
+  HUD.drawPatches(ctx, fx.patches, now);
   HUD.drawSkeleton(ctx, handsPx);
 
-  // tracking box(es)
-  for (const lm of hands) {
-    const bb = G.boundingBox(lm);
-    // map corners (mirroring flips min/max x)
-    const c1 = map({ x: bb.minX, y: bb.minY });
-    const c2 = map({ x: bb.maxX, y: bb.maxY });
-    const x = Math.min(c1.x, c2.x);
-    const y = Math.min(c1.y, c2.y);
-    const w = Math.abs(c2.x - c1.x);
-    const h = Math.abs(c2.y - c1.y);
-    HUD.drawBox(ctx, { x, y, w, h, nx0: x / dpr, ny1: (y + h) / dpr });
+  if (frameRect && framing) {
+    HUD.drawBox(ctx, {
+      ...frameRect,
+      nx0: frameRect.x / dpr,
+      ny0: frameRect.y / dpr,
+      nx1: (frameRect.x + frameRect.w) / dpr,
+      ny1: (frameRect.y + frameRect.h) / dpr,
+    });
+  } else {
+    for (const lm of handsPx) HUD.drawGrip(ctx, gripPx(lm));
   }
 
-  // focus reticle
-  focusPx = lerp(focusPx, focusTarget, FOCUS.ease);
-  if (resizing || now < showFocusUntil) {
-    HUD.drawFocus(ctx, canvas.width / 2, canvas.height / 2, focusPx);
+  // mouse-drag fallback rect
+  if (drag) {
+    const r = rectFromPoints({ x: drag.x0, y: drag.y0 }, { x: drag.x1, y: drag.y1 });
+    if (r.w > 4 && r.h > 4) {
+      HUD.drawBox(ctx, {
+        ...r,
+        nx0: r.x / dpr,
+        ny0: r.y / dpr,
+        nx1: (r.x + r.w) / dpr,
+        ny1: (r.y + r.h) / dpr,
+      });
+    }
   }
 
-  // ── HUD text ──
   updateHud(hands.length);
 }
 
-const G_WRIST = 0;
-const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const lerp = (a, b, t) => a + (b - a) * t;
+// grip point straight from the already-mapped px landmarks
+function gripPx(lmPx) {
+  return { x: (lmPx[4].x + lmPx[8].x) / 2, y: (lmPx[4].y + lmPx[8].y) / 2 };
+}
 
 // ── HUD DOM updates ──
 const rStatus = el('rStatus');
@@ -207,13 +178,13 @@ function updateHud(nHands) {
   if (rStatus.textContent !== status) rStatus.textContent = status;
   rStatus.className = 'value';
   if (status === STATUS.FROZEN) rStatus.classList.add('is-frozen');
-  else if (status === STATUS.DISTORTING) rStatus.classList.add('is-distort');
   else if (status === STATUS.RESIZING) rStatus.classList.add('is-resize');
 
   rFps.textContent = String(Math.round(fps)).padStart(2, '0');
   rInput.textContent = `${nHands} HAND${nHands === 1 ? '' : 'S'}`;
 
-  const modeText = status === STATUS.DISTORTING ? brush : MODES.NORMAL;
+  const n = fx.patches.length;
+  const modeText = n > 0 ? `FREEZE ×${n}` : 'NORMAL';
   if (rMode.textContent !== modeText) rMode.textContent = modeText;
 }
 
@@ -224,70 +195,64 @@ function frame() {
   const dt = now - lastNow;
   lastNow = now;
   fps = fps * 0.9 + (1000 / Math.max(dt, 1)) * 0.1;
-  step(now, dt);
+  step(now);
   requestAnimationFrame(frame);
 }
 
-// ── Ticker ──
+// ── State-aware ticker ──
 let tick = 0;
+function tickerLines() {
+  if (fx.hasPatches) return TICKER.frozen;
+  if (status === STATUS.IDLE) return TICKER.idle;
+  return TICKER.tracking;
+}
 function startTicker() {
   const node = el('ticker');
   setInterval(() => {
     node.classList.add('blink');
     setTimeout(() => {
-      tick = (tick + 1) % TICKER.lines.length;
-      node.textContent = TICKER.lines[tick];
+      const lines = tickerLines();
+      tick = (tick + 1) % lines.length;
+      node.textContent = lines[tick];
       node.classList.remove('blink');
     }, 250);
   }, TICKER.intervalMs);
 }
 
-// ── Input: keyboard + mouse fallback ──
+// ── Input: keyboard + mouse/touch fallback (drag a rect → freeze it) ──
 function bindInput() {
   window.addEventListener('keydown', (e) => {
-    const k = e.key.toLowerCase();
-    if (k === 'r') fx.reset(), (manualFreeze = false), (pinchActive = false);
-    else if (k === 'f') {
-      manualFreeze = !manualFreeze;
-      if (manualFreeze) fx.freeze();
-      else if (!pinchActive) fx.unfreeze();
-    } else if (k === '1') brush = MODES.PIXEL;
-    else if (k === '2') brush = MODES.SHIFT;
+    if (e.key.toLowerCase() === 'r') fx.reset();
   });
-  const pos = (e) => {
+
+  const pt = (e) => {
     const r = canvas.getBoundingClientRect();
-    mouse.x = e.clientX - r.left;
-    mouse.y = e.clientY - r.top;
+    const src = e.touches ? e.touches[0] : e;
+    return { x: (src.clientX - r.left) * dpr, y: (src.clientY - r.top) * dpr };
   };
-  canvas.addEventListener('mousemove', pos);
-  canvas.addEventListener('mousedown', (e) => {
-    pos(e);
-    mouse.down = true;
-  });
-  window.addEventListener('mouseup', () => (mouse.down = false));
-  // touch → same as mouse-drag distortion
-  canvas.addEventListener(
-    'touchstart',
-    (e) => {
-      const t = e.touches[0];
-      const r = canvas.getBoundingClientRect();
-      mouse.x = t.clientX - r.left;
-      mouse.y = t.clientY - r.top;
-      mouse.down = true;
-    },
-    { passive: true }
-  );
-  canvas.addEventListener(
-    'touchmove',
-    (e) => {
-      const t = e.touches[0];
-      const r = canvas.getBoundingClientRect();
-      mouse.x = t.clientX - r.left;
-      mouse.y = t.clientY - r.top;
-    },
-    { passive: true }
-  );
-  window.addEventListener('touchend', () => (mouse.down = false));
+  const down = (e) => {
+    const p = pt(e);
+    drag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+  };
+  const move = (e) => {
+    if (!drag) return;
+    const p = pt(e);
+    drag.x1 = p.x;
+    drag.y1 = p.y;
+  };
+  const up = () => {
+    if (!drag) return;
+    const r = rectFromPoints({ x: drag.x0, y: drag.y0 }, { x: drag.x1, y: drag.y1 });
+    const min = FRAME.minSizePx * dpr;
+    if (r.w > min && r.h > min && running) fx.freezeRegion(r, performance.now());
+    drag = null;
+  };
+  canvas.addEventListener('mousedown', down);
+  canvas.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+  canvas.addEventListener('touchstart', down, { passive: true });
+  canvas.addEventListener('touchmove', move, { passive: true });
+  window.addEventListener('touchend', up);
 }
 
 // ── Boot ──
@@ -307,7 +272,7 @@ async function boot() {
   lastNow = performance.now();
   requestAnimationFrame(frame);
 
-  // load tracker in parallel; effects/mouse already work without it
+  // load tracker in parallel; the mouse fallback already works without it
   loadTracker()
     .then(() => {
       trackerReady = true;

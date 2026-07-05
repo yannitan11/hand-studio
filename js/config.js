@@ -1,11 +1,15 @@
 // ─────────────────────────────────────────────────────────────────────────
 // HÄND STUDIO — all the feel-knobs live here.
 // This is a playground: tune these live while the camera is running.
+//
+// The core loop (from the reference recording, first 8s):
+//   frame a rectangle with two hands → pinch to freeze that region →
+//   the patch sticks over the live feed → fists to reset.
 // ─────────────────────────────────────────────────────────────────────────
 
 export const BRAND = {
   watermark: 'HÄND · STUDIO',
-  build: 'v1.0',
+  build: 'v2.0',
 };
 
 // MediaPipe HandLandmarker (loaded from CDN at runtime).
@@ -26,78 +30,48 @@ export const GESTURE = {
   // A finger counts as "extended" when tip is this much farther from the
   // wrist than its middle (PIP) joint, as a fraction of handSize.
   extendMargin: 0.12,
-  // Point-up needs the index tip clearly above the index knuckle (screen-up).
-  pointUpMinRise: 0.10, // fraction of canvas height the tip sits above the MCP
-  // Vertical hand speed (px/frame, primary hand) that engages RESIZING.
-  resizeVelocity: 2.2,
-  // Fingertip speed below this (px/frame) counts as "dwelling" while distorting.
-  dwellSpeed: 6,
+  // Fist: every fingertip (incl. index) pulled within this × handSize of the
+  // wrist. Excludes a pinch, where the index+thumb tips sit far forward.
+  fistReach: 1.35,
+  fistHoldFrames: 6, // frames all visible hands must hold fists to reset
 };
 
-// Freeze
-export const FREEZE = {
-  // extra frames the pinch must hold before we commit to FROZEN (debounce)
-  holdFrames: 2,
+// The two-hand framing rectangle + frozen patches.
+export const FRAME = {
+  // grip point = midpoint of thumb tip & index tip (== the pinch point)
+  minSizePx: 40, // rect must be at least this (CSS px) each side to capture
+  captureHoldFrames: 3, // both-hands-pinched frames before we commit
+  flashMs: 320, // white flash on the patch right after capture
+  maxPatches: 12, // oldest patch drops off beyond this
 };
 
-// Point-up focus reticle (the thing you grow / shrink).
-export const FOCUS = {
-  min: 0.14, // as a fraction of the smaller canvas dimension
-  max: 0.72,
-  start: 0.30,
-  // how fast the reticle responds to vertical hand motion
-  gain: 0.0016,
-  ease: 0.18,
-};
-
-// Distortion brushes. blockMin/Max in device px; radius is the brush size.
-export const DISTORT = {
-  radius: 90, // px brush radius on the canvas
-  radiusEase: 0.25,
-  blockMin: 8, // mosaic cell when you just arrived
-  blockMax: 30, // mosaic cell after dwelling
-  dwellRampMs: 900, // time to ramp from blockMin → blockMax while dwelling
-  gridColor: 'rgba(255,64,48,0.85)', // the red technical grid overlay
-  gridWidth: 1,
-  layerAlpha: 1, // opacity of the painted layer over the base
-};
-
-export const MODES = {
-  NORMAL: 'NORMAL',
-  PIXEL: 'PIXEL GRID',
-  SHIFT: 'RGB SHIFT',
-};
-
-// Rotating instruction ticker (bottom-left). Cycles on a timer.
+// Rotating instruction ticker (bottom-left). State-aware.
 export const TICKER = {
   intervalMs: 2600,
-  lines: [
-    'PINCH TO FREEZE',
-    'POINT UP TO RESIZE',
-    'POINT AT FRAME TO DISTURB',
-    'PRESS R TO RESET',
-  ],
+  idle: ['SHOW YOUR HANDS'],
+  tracking: ['FRAME WITH TWO HANDS', 'PINCH TO FREEZE'],
+  frozen: ['FISTS TO RESET', 'FRAME AGAIN FOR ANOTHER'],
 };
 
 // HUD look
 export const HUD = {
-  skeleton: 'rgba(255,255,255,0.92)',
-  joint: 'rgba(255,255,255,0.98)',
-  jointRadius: 3.2,
-  boneWidth: 1.4,
+  skeleton: 'rgba(255,255,255,0.35)', // faint — the rect is the hero
+  joint: 'rgba(255,255,255,0.6)',
+  jointRadius: 2.4,
+  boneWidth: 1,
   box: 'rgba(255,255,255,0.85)',
   boxDim: 'rgba(255,255,255,0.35)',
+  patchEdge: 'rgba(255,255,255,0.22)', // hairline around a frozen patch
   tick: 14, // corner bracket length, px
-  focus: 'rgba(255,255,255,0.9)',
+  grip: 'rgba(255,255,255,0.9)',
 };
 
 // Status strings (also drives the HUD).
 export const STATUS = {
   IDLE: 'IDLE',
   TRACKING: 'TRACKING',
-  FROZEN: 'FROZEN',
   RESIZING: 'RESIZING',
-  DISTORTING: 'DISTURBING',
+  FROZEN: 'FROZEN',
 };
 
 // MediaPipe hand connections (bone list).

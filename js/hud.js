@@ -1,8 +1,9 @@
-// Canvas overlay chrome: hand skeleton, tracking box with corner brackets +
-// coordinate readouts, the point-up focus reticle, and the red brush grid.
+// Canvas overlay chrome: faint hand skeleton, the two-hand framing rectangle
+// with corner brackets + rotated coordinate readouts, grip markers, patch
+// edges and the capture flash.
 // (The fixed text HUD — watermark / STATUS / FPS / ticker — is DOM, in app.js.)
 
-import { HUD, HAND_BONES, DISTORT } from './config.js';
+import { HUD, HAND_BONES, FRAME } from './config.js';
 
 // Canvas is a device-pixel backing store, so multiply px sizes by DPR.
 let S = 1;
@@ -39,7 +40,7 @@ function bracket(ctx, x, y, dx, dy, t) {
   ctx.stroke();
 }
 
-// box is {x, y, w, h} in device px. label optional.
+// box is {x, y, w, h} in device px; nx0/ny1 are the CSS-px readout values.
 export function drawBox(ctx, box, opts = {}) {
   const { x, y, w, h } = box;
   const t = HUD.tick * S;
@@ -62,21 +63,25 @@ export function drawBox(ctx, box, opts = {}) {
   ctx.font = `${f}px "Space Mono", ui-monospace, monospace`;
   ctx.textBaseline = 'alphabetic';
 
-  // top-left: x, rotated up the left edge
+  // top-left: x then y, running up the left edge
   ctx.save();
   ctx.translate(x - 6 * S, y + 4 * S);
   ctx.rotate(-Math.PI / 2);
-  ctx.textAlign = 'left';
-  ctx.fillText(`X ${Math.round(box.nx0 ?? x)}`, 0, 0);
+  ctx.textAlign = 'right';
+  ctx.fillText(`Y ${Math.round(box.ny0 ?? 0)}`, 0, 0);
   ctx.restore();
+  ctx.textAlign = 'left';
+  ctx.fillText(`X ${Math.round(box.nx0 ?? 0)}`, x + 6 * S, y - 6 * S);
 
-  // bottom-right: y, rotated down the right edge
+  // bottom-right: mirrored readouts
   ctx.save();
   ctx.translate(x + w + 12 * S, y + h - 4 * S);
   ctx.rotate(-Math.PI / 2);
-  ctx.textAlign = 'right';
-  ctx.fillText(`Y ${Math.round(box.ny1 ?? y + h)}`, 0, 0);
+  ctx.textAlign = 'left';
+  ctx.fillText(`Y ${Math.round(box.ny1 ?? 0)}`, 0, 0);
   ctx.restore();
+  ctx.textAlign = 'right';
+  ctx.fillText(`X ${Math.round(box.nx1 ?? 0)}`, x + w - 6 * S, y + h + 14 * S);
 
   if (opts.label) {
     ctx.textAlign = 'left';
@@ -84,50 +89,33 @@ export function drawBox(ctx, box, opts = {}) {
   }
 }
 
-export function drawFocus(ctx, cx, cy, size) {
-  const half = size / 2;
-  drawBox(
-    ctx,
-    { x: cx - half, y: cy - half, w: size, h: size, nx0: cx - half, ny1: cy + half },
-    { color: HUD.focus, dim: 'rgba(255,255,255,0.18)', label: 'FOCUS', font: 10 }
-  );
-  // center crosshair
-  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-  ctx.lineWidth = 1 * S;
+// Small cross at each hand's grip point so tracking feels alive even before
+// the second hand shows up.
+export function drawGrip(ctx, p) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.strokeStyle = HUD.grip;
+  ctx.lineWidth = 1.2 * S;
+  const r = 6 * S;
   ctx.beginPath();
-  ctx.moveTo(cx - 7 * S, cy);
-  ctx.lineTo(cx + 7 * S, cy);
-  ctx.moveTo(cx, cy - 7 * S);
-  ctx.lineTo(cx, cy + 7 * S);
+  ctx.moveTo(p.x - r, p.y);
+  ctx.lineTo(p.x + r, p.y);
+  ctx.moveTo(p.x, p.y - r);
+  ctx.lineTo(p.x, p.y + r);
   ctx.stroke();
 }
 
-// Red technical grid over the active brush footprint.
-export function drawBrushGrid(ctx, cx, cy, r, block) {
+// Hairline around pinned patches + a white flash right after capture.
+export function drawPatches(ctx, patches, now) {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.clip();
-  ctx.strokeStyle = DISTORT.gridColor;
-  ctx.lineWidth = DISTORT.gridWidth * S;
-  const step = Math.max(6, block);
-  const x0 = cx - r, x1 = cx + r, y0 = cy - r, y1 = cy + r;
-  ctx.beginPath();
-  for (let gx = Math.floor(x0 / step) * step; gx <= x1; gx += step) {
-    ctx.moveTo(gx, y0);
-    ctx.lineTo(gx, y1);
+  for (const p of patches) {
+    const age = now - p.bornAt;
+    ctx.strokeStyle = HUD.patchEdge;
+    ctx.lineWidth = 1 * S;
+    ctx.strokeRect(p.x + 0.5, p.y + 0.5, p.w - 1, p.h - 1);
+    if (age < FRAME.flashMs) {
+      const a = 1 - age / FRAME.flashMs;
+      ctx.fillStyle = `rgba(255,255,255,${(0.85 * a).toFixed(3)})`;
+      ctx.fillRect(p.x, p.y, p.w, p.h);
+    }
   }
-  for (let gy = Math.floor(y0 / step) * step; gy <= y1; gy += step) {
-    ctx.moveTo(x0, gy);
-    ctx.lineTo(x1, gy);
-  }
-  ctx.stroke();
-  ctx.restore();
-  // ring
-  ctx.strokeStyle = DISTORT.gridColor;
-  ctx.lineWidth = 1.2 * S;
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.stroke();
 }

@@ -159,7 +159,6 @@ body {
   transition: color 0.2s ease;
 }
 #rStatus.is-frozen { color: #7fd7ff; }
-#rStatus.is-distort { color: var(--red); }
 #rStatus.is-resize { color: #ffd24a; }
 
 .ticker {

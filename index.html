@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>HÄND STUDIO — hand-tracking playground</title>
+    <meta
+      name="description"
+      content="A webcam hand-tracking visual playground. Pinch to freeze, point to distort, resize with a gesture. Runs entirely in your browser."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Space+Mono:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="stage">
+      <video id="cam" playsinline muted></video>
+      <canvas id="view"></canvas>
+      <div class="film" aria-hidden="true"></div>
+
+      <!-- Fixed HUD chrome -->
+      <div class="hud" aria-hidden="true">
+        <div class="rule rule-top"></div>
+        <div class="rule rule-bottom"></div>
+
+        <header class="hud-top">
+          <div class="brand"><span class="dot"></span>HÄND · STUDIO</div>
+          <div class="readouts">
+            <div class="readout">
+              <span class="label">STATUS</span>
+              <span class="value" id="rStatus">BOOTING</span>
+            </div>
+            <div class="readout">
+              <span class="label">FPS</span>
+              <span class="value" id="rFps">––</span>
+            </div>
+            <div class="readout">
+              <span class="label">INPUT</span>
+              <span class="value" id="rInput">0 HANDS</span>
+            </div>
+          </div>
+        </header>
+
+        <footer class="hud-bottom">
+          <div class="ticker" id="ticker">PINCH TO FREEZE</div>
+          <div class="readout mode">
+            <span class="label">MODE</span>
+            <span class="value" id="rMode">NORMAL</span>
+          </div>
+        </footer>
+
+        <div class="keys" id="keys">
+          <span>[1] PIXEL</span><span>[2] RGB</span><span>[F] FREEZE</span><span>[R] RESET</span>
+        </div>
+      </div>
+
+      <!-- Start gate -->
+      <div class="screen" id="startScreen">
+        <div class="screen-inner">
+          <p class="eyebrow">HÄND · STUDIO — {BUILD}</p>
+          <h1>Talk to the<br />camera with<br />your hands.</h1>
+          <p class="lede">
+            Real-time hand tracking in the browser. <b>Pinch</b> to freeze the frame,
+            <b>point</b> at it to smear pixels, lift your finger to resize the focus. Nothing
+            leaves your device.
+          </p>
+          <button class="cta" id="enterBtn">ENABLE CAMERA →</button>
+          <p class="fineprint">Needs webcam access · works in Chrome on a laptop</p>
+        </div>
+      </div>
+
+      <!-- Error / fallback -->
+      <div class="screen" id="errorScreen" hidden>
+        <div class="screen-inner">
+          <p class="eyebrow">SIGNAL LOST</p>
+          <h1 id="errTitle">No camera.</h1>
+          <p class="lede" id="errMsg"></p>
+          <button class="cta" id="retryBtn">TRY AGAIN</button>
+        </div>
+      </div>
+
+      <div class="loading" id="loading" hidden>
+        <div class="spinner"></div>
+        <span>LOADING HAND MODEL…</span>
+      </div>
+    </div>
+
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>

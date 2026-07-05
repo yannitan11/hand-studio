@@ -8,6 +8,8 @@ pixel grid.
 No backend, no login, no build step. Everything runs client-side; the video never
 leaves your device.
 
+**Live:** https://yannitan11.github.io/hand-studio/
+
 ## Gestures
 
 | Gesture | Effect |
@@ -63,5 +65,9 @@ sandbox has no webcam, so the live feed only works on a real localhost with a ca
 
 ## Deploy
 
-Static files — drop on GitHub Pages (main / root) and open the `https://…` URL
-(camera access requires HTTPS, which Pages provides).
+Auto-deploys via GitHub Pages (main / root) — edit → commit → push. Camera access
+requires HTTPS, which Pages provides.
+
+```bash
+git add -A && git commit -m "your message" && git push
+```

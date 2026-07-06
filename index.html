@@ -6,7 +6,7 @@
     <title>HÄND STUDIO — hand-tracking playground</title>
     <meta
       name="description"
-      content="A webcam hand-tracking visual playground. Pinch to freeze, point to distort, resize with a gesture. Runs entirely in your browser."
+      content="A webcam hand-tracking visual playground. Pinch to freeze patches, stack them into a collage, drag and resize with your hands, save as PNG. Runs entirely in your browser."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -54,6 +54,7 @@
         </footer>
 
         <div class="keys" id="keys">
+          <span>[S] SAVE</span>
           <span>[R] RESET</span>
         </div>
       </div>
@@ -62,11 +63,12 @@
       <div class="screen" id="startScreen">
         <div class="screen-inner">
           <p class="eyebrow">HÄND · STUDIO — {BUILD}</p>
-          <h1>Freeze time.<br />Keep a window<br />alive.</h1>
+          <h1>Freeze time.<br />Stack the<br />moments.</h1>
           <p class="lede">
-            Real-time hand tracking in the browser. <b>Open two hands</b> to cut a rectangle,
-            <b>pinch</b> to freeze the whole frame around it — that window keeps playing live.
-            Make <b>fists</b> to let it go. Nothing leaves your device.
+            Real-time hand tracking in the browser. <b>Open two hands</b> to frame a rectangle,
+            <b>pinch</b> to freeze that patch onto the live feed. Stack a dozen, each caught at its
+            own instant — then <b>grab a patch to move it</b>, pinch its corners to resize, and
+            press <b>S</b> to save the collage. <b>Fists</b> to clear. Nothing leaves your device.
           </p>
           <button class="cta" id="enterBtn">ENABLE CAMERA →</button>
           <p class="fineprint">Needs webcam access · works in Chrome on a laptop</p>

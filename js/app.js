@@ -31,10 +31,16 @@ let trackerReady = false;
 let status = STATUS.IDLE;
 let bothPinched = false; // latched until both hands release
 let pinchHold = 0;
+let pinchMiss = 0; // consecutive noisy frames tolerated mid-pinch-hold
 let fistHold = 0;
 
-// mouse/touch fallback: drag a rect, release to freeze it
-let drag = null; // {x0, y0, x1, y1} in device px
+// grab-to-move / resize a frozen patch with the hands
+let grab = null; // { mode:'move'|'resize', patch, lastX, lastY }
+let grabMiss = 0; // frames a held patch survives losing its pinch
+
+// mouse/touch fallback: create a rect, or grab an existing patch
+let drag = null; // {x0, y0, x1, y1, mode:'create'} in device px
+let mgrab = null; // { mode:'move'|'resize', patch, corner, offX, offY }
 
 // fps
 let fps = 0;
@@ -79,44 +85,74 @@ function step(now) {
 
   fx.renderBase(video);
 
-  // ── Two-hand framing rect ──
+  // ── Per-hand pinch state, mapped to device px ──
+  const handInfo = hands.map((lm) => {
+    const amt = G.pinchAmount(lm);
+    return {
+      pinched: amt < GESTURE.pinchRatio,
+      released: amt > GESTURE.pinchReleaseRatio,
+      pt: map(G.gripPoint(lm)),
+    };
+  });
+
+  // ── Two-hand framing rect (for capturing a new patch) ──
   let frameRect = null;
   let framing = false;
   if (hands.length === 2) {
-    const gripA = map(G.gripPoint(hands[0]));
-    const gripB = map(G.gripPoint(hands[1]));
-    frameRect = rectFromPoints(gripA, gripB);
+    frameRect = rectFromPoints(handInfo[0].pt, handInfo[1].pt);
     const min = FRAME.minSizePx * dpr;
     framing = frameRect.w > min && frameRect.h > min;
+  }
 
-    // both hands pinched (with hysteresis + a short hold) → capture
-    const aAmt = G.pinchAmount(hands[0]);
-    const bAmt = G.pinchAmount(hands[1]);
-    const pinchedNow = aAmt < GESTURE.pinchRatio && bAmt < GESTURE.pinchRatio;
-    const releasedNow =
-      aAmt > GESTURE.pinchReleaseRatio && bAmt > GESTURE.pinchReleaseRatio;
+  // ── Interaction: grabbing an existing patch wins over capturing a new one ──
+  if (grab) {
+    continueHandGrab(handInfo);
+  } else if (!startHandResize(handInfo)) {
+    const twoHands = hands.length === 2;
+    const bothPinch = twoHands && handInfo[0].pinched && handInfo[1].pinched;
+    const bothRelease = twoHands && handInfo[0].released && handInfo[1].released;
 
-    if (!bothPinched && framing && pinchedNow) {
+    // Capture: two hands, both pinched, framing a real rect — held briefly.
+    if (!bothPinched && framing && bothPinch) {
       pinchHold++;
+      pinchMiss = 0;
       if (pinchHold >= FRAME.captureHoldFrames) {
-        fx.freeze(frameRect, now); // freeze everything but this window
+        fx.freeze(frameRect, now, FRAME.maxPatches); // stamp a new frozen patch
         bothPinched = true; // latch: no re-capture until both release
         pinchHold = 0;
       }
-    } else if (!pinchedNow) {
-      pinchHold = 0;
+    } else if (twoHands && !bothPinch) {
+      // Both hands seen but not both pinched — a ratio flicker mid-hold. Give
+      // grace before dropping the streak (self-occlusion at the pinch is noisy).
+      if (pinchHold === 0 || ++pinchMiss > GESTURE.pinchMissGrace) {
+        pinchHold = 0;
+        pinchMiss = 0;
+      }
+    } else if (!twoHands) {
+      // A hand briefly dropped out of detection mid-pinch — hold the streak.
+      if (pinchHold > 0 && ++pinchMiss <= GESTURE.pinchMissGrace) {
+        /* hold steady */
+      } else {
+        pinchHold = 0;
+        pinchMiss = 0;
+        bothPinched = false;
+      }
     }
-    if (bothPinched && releasedNow) bothPinched = false;
-  } else {
-    pinchHold = 0;
-    bothPinched = false;
+    if (bothPinched && bothRelease) bothPinched = false;
+
+    // One-hand pinch landing inside a patch → grab it to move.
+    if (!bothPinch) {
+      const h = handInfo.find((x) => x.pinched && fx.patchAt(x.pt.x, x.pt.y));
+      if (h) startHandMove(h);
+    }
   }
 
-  // ── Fists → reset ──
+  // ── Fists → clear everything ──
   if (fx.isFrozen && hands.length > 0 && hands.every((lm) => G.isFist(lm))) {
     fistHold++;
     if (fistHold >= GESTURE.fistHoldFrames) {
       fx.reset();
+      grab = null;
       fistHold = 0;
     }
   } else {
@@ -124,18 +160,23 @@ function step(now) {
   }
 
   // ── Status resolution ──
-  if (framing) status = STATUS.RESIZING;
+  if (grab || mgrab) status = STATUS.MOVING;
+  else if (framing) status = STATUS.RESIZING;
   else if (fx.isFrozen) status = STATUS.FROZEN;
   else if (hands.length) status = STATUS.TRACKING;
   else status = STATUS.IDLE;
 
   // ── Draw ──
   fx.compositeTo(ctx);
-  HUD.drawWindow(ctx, fx.window);
-  HUD.drawFlash(ctx, now, fx.flashAt, canvas.width, canvas.height);
+  const active = grab?.patch || mgrab?.patch || null;
+  for (let i = 0; i < fx.patches.length; i++) {
+    const p = fx.patches[i];
+    HUD.drawPatchFlash(ctx, p, now);
+    HUD.drawPatch(ctx, p, i, p === active);
+  }
   HUD.drawSkeleton(ctx, handsPx);
 
-  if (frameRect && framing) {
+  if (frameRect && framing && !grab) {
     HUD.drawBox(ctx, {
       ...frameRect,
       nx0: frameRect.x / dpr,
@@ -143,12 +184,12 @@ function step(now) {
       nx1: (frameRect.x + frameRect.w) / dpr,
       ny1: (frameRect.y + frameRect.h) / dpr,
     });
-  } else {
+  } else if (!grab) {
     for (const lm of handsPx) HUD.drawGrip(ctx, gripPx(lm));
   }
 
-  // mouse-drag fallback rect
-  if (drag) {
+  // mouse-drag "create" rect
+  if (drag && drag.mode === 'create') {
     const r = rectFromPoints({ x: drag.x0, y: drag.y0 }, { x: drag.x1, y: drag.y1 });
     if (r.w > 4 && r.h > 4) {
       HUD.drawBox(ctx, {
@@ -162,6 +203,71 @@ function step(now) {
   }
 
   updateHud(hands.length);
+}
+
+// ── Hand grab helpers (move / resize a frozen patch) ──
+function nearestPinched(pinched, x, y) {
+  let best = null;
+  let bestD = Infinity;
+  for (const h of pinched) {
+    const d = Math.hypot(h.pt.x - x, h.pt.y - y);
+    if (d < bestD) {
+      bestD = d;
+      best = h;
+    }
+  }
+  return best;
+}
+
+function startHandMove(h) {
+  const patch = fx.patchAt(h.pt.x, h.pt.y);
+  if (!patch) return;
+  fx.bringToFront(patch);
+  grab = { mode: 'move', patch, lastX: h.pt.x, lastY: h.pt.y };
+  grabMiss = 0;
+}
+
+// Two pinched hands inside the SAME patch → resize it by its two corners.
+function startHandResize(handInfo) {
+  const pinched = handInfo.filter((h) => h.pinched);
+  if (pinched.length < 2) return false;
+  const pa = fx.patchAt(pinched[0].pt.x, pinched[0].pt.y);
+  const pb = fx.patchAt(pinched[1].pt.x, pinched[1].pt.y);
+  if (pa && pa === pb) {
+    fx.bringToFront(pa);
+    grab = { mode: 'resize', patch: pa };
+    grabMiss = 0;
+    applyHandResize(pinched);
+    return true;
+  }
+  return false;
+}
+
+function applyHandResize(pinched) {
+  const rect = rectFromPoints(pinched[0].pt, pinched[1].pt);
+  fx.setPatchRect(grab.patch, rect, FRAME.minSizePx * dpr);
+}
+
+function continueHandGrab(handInfo) {
+  const pinched = handInfo.filter((h) => h.pinched);
+  if (grab.mode === 'move') {
+    const h = nearestPinched(pinched, grab.lastX, grab.lastY);
+    if (h) {
+      fx.movePatch(grab.patch, h.pt.x - grab.lastX, h.pt.y - grab.lastY);
+      grab.lastX = h.pt.x;
+      grab.lastY = h.pt.y;
+      grabMiss = 0;
+    } else if (++grabMiss > FRAME.grabMissGrace) {
+      grab = null;
+    }
+  } else {
+    if (pinched.length >= 2) {
+      applyHandResize(pinched);
+      grabMiss = 0;
+    } else if (++grabMiss > FRAME.grabMissGrace) {
+      grab = null;
+    }
+  }
 }
 
 // grip point straight from the already-mapped px landmarks
@@ -179,12 +285,14 @@ function updateHud(nHands) {
   if (rStatus.textContent !== status) rStatus.textContent = status;
   rStatus.className = 'value';
   if (status === STATUS.FROZEN) rStatus.classList.add('is-frozen');
-  else if (status === STATUS.RESIZING) rStatus.classList.add('is-resize');
+  else if (status === STATUS.RESIZING || status === STATUS.MOVING)
+    rStatus.classList.add('is-resize');
 
   rFps.textContent = String(Math.round(fps)).padStart(2, '0');
   rInput.textContent = `${nHands} HAND${nHands === 1 ? '' : 'S'}`;
 
-  const modeText = fx.isFrozen ? 'LIVE WINDOW' : 'NORMAL';
+  const n = fx.patches.length;
+  const modeText = n ? `${String(n).padStart(2, '0')} FROZEN` : 'NORMAL';
   if (rMode.textContent !== modeText) rMode.textContent = modeText;
 }
 
@@ -219,10 +327,52 @@ function startTicker() {
   }, TICKER.intervalMs);
 }
 
-// ── Input: keyboard + mouse/touch fallback (drag a rect → freeze it) ──
+// Save the current collage (base + patches, no HUD chrome) as a PNG.
+async function saveSnapshot() {
+  if (!fx.isFrozen) return;
+  const blob = await fx.snapshotBlob();
+  if (!blob) return;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `hand-studio-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Resize a patch by dragging one corner, opposite corner pinned.
+function resizeByCorner(g, p) {
+  const patch = g.patch;
+  let left = patch.x;
+  let top = patch.y;
+  let right = patch.x + patch.w;
+  let bottom = patch.y + patch.h;
+  if (g.corner === 'tl') { left = p.x; top = p.y; }
+  else if (g.corner === 'tr') { right = p.x; top = p.y; }
+  else if (g.corner === 'bl') { left = p.x; bottom = p.y; }
+  else { right = p.x; bottom = p.y; }
+  fx.setPatchRect(
+    patch,
+    { x: Math.min(left, right), y: Math.min(top, bottom), w: Math.abs(right - left), h: Math.abs(bottom - top) },
+    FRAME.minSizePx * dpr
+  );
+}
+
+// ── Input: keyboard + mouse/touch fallback ──
+//   empty space → drag a rect to freeze a new patch
+//   inside a patch → drag to move it · corner → drag to resize
+//   [S] save PNG · [R] clear
 function bindInput() {
   window.addEventListener('keydown', (e) => {
-    if (e.key.toLowerCase() === 'r') fx.reset();
+    const k = e.key.toLowerCase();
+    if (k === 'r') {
+      fx.reset();
+      grab = null;
+    } else if (k === 's') {
+      saveSnapshot();
+    }
   });
 
   const pt = (e) => {
@@ -232,19 +382,56 @@ function bindInput() {
   };
   const down = (e) => {
     const p = pt(e);
-    drag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+    const handle = FRAME.handleGrabPx * dpr;
+    // corner of a patch → resize
+    for (let i = fx.patches.length - 1; i >= 0; i--) {
+      const patch = fx.patches[i];
+      const corner = fx.cornerAt(patch, p.x, p.y, handle);
+      if (corner) {
+        fx.bringToFront(patch);
+        mgrab = { mode: 'resize', patch, corner };
+        drag = null;
+        return;
+      }
+    }
+    // inside a patch → move
+    const patch = fx.patchAt(p.x, p.y);
+    if (patch) {
+      fx.bringToFront(patch);
+      mgrab = { mode: 'move', patch, offX: p.x - patch.x, offY: p.y - patch.y };
+      drag = null;
+      return;
+    }
+    // empty space → draw a new capture rect
+    drag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, mode: 'create' };
   };
   const move = (e) => {
-    if (!drag) return;
     const p = pt(e);
+    if (mgrab) {
+      if (mgrab.mode === 'move') {
+        fx.movePatch(
+          mgrab.patch,
+          p.x - mgrab.offX - mgrab.patch.x,
+          p.y - mgrab.offY - mgrab.patch.y
+        );
+      } else {
+        resizeByCorner(mgrab, p);
+      }
+      return;
+    }
+    if (!drag) return;
     drag.x1 = p.x;
     drag.y1 = p.y;
   };
   const up = () => {
+    if (mgrab) {
+      mgrab = null;
+      return;
+    }
     if (!drag) return;
     const r = rectFromPoints({ x: drag.x0, y: drag.y0 }, { x: drag.x1, y: drag.y1 });
     const min = FRAME.minSizePx * dpr;
-    if (r.w > min && r.h > min && running) fx.freeze(r, performance.now());
+    if (r.w > min && r.h > min && running) fx.freeze(r, performance.now(), FRAME.maxPatches);
     drag = null;
   };
   canvas.addEventListener('mousedown', down);

@@ -104,35 +104,47 @@ export function drawGrip(ctx, p) {
   ctx.stroke();
 }
 
-// The live porthole while frozen: bright bracketed outline + a "LIVE" tag,
-// so it reads as the one moving window in an otherwise-frozen frame.
-export function drawWindow(ctx, wnd) {
-  if (!wnd) return;
-  drawBox(
-    ctx,
-    {
-      ...wnd,
-      nx0: wnd.x / S,
-      ny0: wnd.y / S,
-      nx1: (wnd.x + wnd.w) / S,
-      ny1: (wnd.y + wnd.h) / S,
-    },
-    { color: HUD.box, label: 'LIVE' }
-  );
-  // pulsing dot on the label
+// A frozen patch's edge: hairline outline + corner brackets + a tiny index
+// tag. `active` (grabbed) patches read brighter and grow drag handles.
+export function drawPatch(ctx, patch, index, active) {
+  const { x, y, w, h } = patch;
+  const t = HUD.tick * S;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = HUD.grip;
-  ctx.beginPath();
-  ctx.arc(wnd.x + 30 * S, wnd.y - 11 * S, 2.4 * S, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.strokeStyle = active ? HUD.box : HUD.patchEdge;
+  ctx.lineWidth = (active ? 1.5 : 1) * S;
+  ctx.strokeRect(x, y, w, h);
+
+  ctx.strokeStyle = active ? HUD.box : HUD.boxDim;
+  ctx.lineWidth = 1.5 * S;
+  bracket(ctx, x, y, 1, 1, t);
+  bracket(ctx, x + w, y, -1, 1, t);
+  bracket(ctx, x, y + h, 1, -1, t);
+  bracket(ctx, x + w, y + h, -1, -1, t);
+
+  // corner drag handles while active
+  if (active) {
+    ctx.fillStyle = HUD.grip;
+    const r = 3.2 * S;
+    for (const [cx, cy] of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  ctx.fillStyle = active ? HUD.box : HUD.patchEdge;
+  ctx.font = `${11 * S}px "Space Mono", ui-monospace, monospace`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(String(index + 1).padStart(2, '0'), x + 6 * S, y + 16 * S);
 }
 
-// Full-screen camera flash right after a freeze.
-export function drawFlash(ctx, now, flashAt, w, h) {
-  const age = now - flashAt;
+// White flash localized to a freshly-captured patch (a mini shutter).
+export function drawPatchFlash(ctx, patch, now) {
+  const age = now - patch.flashAt;
   if (age < 0 || age > FRAME.flashMs) return;
   const a = 1 - age / FRAME.flashMs;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = `rgba(255,255,255,${(0.7 * a).toFixed(3)})`;
-  ctx.fillRect(0, 0, w, h);
+  ctx.fillRect(patch.x, patch.y, patch.w, patch.h);
 }

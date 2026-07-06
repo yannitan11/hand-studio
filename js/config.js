@@ -43,14 +43,17 @@ export const FRAME = {
   captureHoldFrames: 3, // both-hands-pinched frames before we commit
   flashMs: 320, // white flash on the patch right after capture
   maxPatches: 12, // oldest patch drops off beyond this
+  // Grab-to-move / resize a frozen patch.
+  grabMissGrace: 6, // frames a held patch survives losing its pinch (tracking noise)
+  handleGrabPx: 22, // corner-handle hit radius for resize (CSS px, mouse/touch)
 };
 
 // Rotating instruction ticker (bottom-left). State-aware.
 export const TICKER = {
   intervalMs: 2600,
   idle: ['SHOW YOUR HANDS'],
-  tracking: ['OPEN TWO HANDS TO FRAME', 'PINCH TO FREEZE AROUND IT'],
-  frozen: ['THE WINDOW STAYS LIVE', 'FISTS TO RESET'],
+  tracking: ['OPEN TWO HANDS TO FRAME', 'PINCH TO FREEZE A PATCH'],
+  frozen: ['GRAB A PATCH TO MOVE IT', 'PINCH TO ADD ANOTHER', 'PRESS S TO SAVE', 'FISTS TO CLEAR'],
 };
 
 // HUD look
@@ -70,7 +73,8 @@ export const HUD = {
 export const STATUS = {
   IDLE: 'IDLE',
   TRACKING: 'TRACKING',
-  RESIZING: 'RESIZING',
+  RESIZING: 'FRAMING', // two hands drawing a capture rectangle
+  MOVING: 'MOVING', // dragging / resizing a frozen patch
   FROZEN: 'FROZEN',
 };
 

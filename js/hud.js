@@ -148,3 +148,50 @@ export function drawPatchFlash(ctx, patch, now) {
   ctx.fillStyle = `rgba(255,255,255,${(0.7 * a).toFixed(3)})`;
   ctx.fillRect(patch.x, patch.y, patch.w, patch.h);
 }
+
+// PORTHOLE mode: the one live window in an otherwise-frozen frame — bright
+// bracketed outline + a "LIVE" tag + pulsing dot. Grows drag handles while
+// being grabbed/resized.
+export function drawPortholeWindow(ctx, wnd, active) {
+  if (!wnd) return;
+  drawBox(
+    ctx,
+    {
+      ...wnd,
+      nx0: wnd.x / S,
+      ny0: wnd.y / S,
+      nx1: (wnd.x + wnd.w) / S,
+      ny1: (wnd.y + wnd.h) / S,
+    },
+    { color: HUD.box, label: 'LIVE' }
+  );
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = HUD.grip;
+  ctx.beginPath();
+  ctx.arc(wnd.x + 30 * S, wnd.y - 11 * S, 2.4 * S, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (active) {
+    const r = 3.2 * S;
+    for (const [cx, cy] of [
+      [wnd.x, wnd.y],
+      [wnd.x + wnd.w, wnd.y],
+      [wnd.x, wnd.y + wnd.h],
+      [wnd.x + wnd.w, wnd.y + wnd.h],
+    ]) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+// Full-screen flash right after a PORTHOLE freeze (the whole frame just froze).
+export function drawPortholeFlash(ctx, now, flashAt, w, h) {
+  const age = now - flashAt;
+  if (age < 0 || age > FRAME.flashMs) return;
+  const a = 1 - age / FRAME.flashMs;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = `rgba(255,255,255,${(0.7 * a).toFixed(3)})`;
+  ctx.fillRect(0, 0, w, h);
+}

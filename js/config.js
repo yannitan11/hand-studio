@@ -9,8 +9,15 @@
 
 export const BRAND = {
   watermark: 'HÄND · STUDIO',
-  build: 'v2.1',
+  build: 'v2.2',
 };
+
+// Two toggleable freeze engines (see effects.js) — press [M] to switch.
+//   PATCH    — pinch stamps the framed region as a frozen still; stack many.
+//   PORTHOLE — pinch freezes the whole frame except the framed region, which
+//              stays a live window onto the camera (the original behavior).
+export const MODE = { PATCH: 'patch', PORTHOLE: 'porthole' };
+export const DEFAULT_MODE = MODE.PATCH;
 
 // MediaPipe HandLandmarker (loaded from CDN at runtime).
 export const TRACKING = {
@@ -52,12 +59,18 @@ export const FRAME = {
   handleGrabPx: 22, // corner-handle hit radius for resize (CSS px, mouse/touch)
 };
 
-// Rotating instruction ticker (bottom-left). State-aware.
+// Rotating instruction ticker (bottom-left). State- and mode-aware.
 export const TICKER = {
   intervalMs: 2600,
   idle: ['SHOW YOUR HANDS'],
-  tracking: ['OPEN TWO HANDS TO FRAME', 'PINCH TO FREEZE A PATCH'],
-  frozen: ['GRAB A PATCH TO MOVE IT', 'PINCH TO ADD ANOTHER', 'PRESS S TO SAVE', 'FISTS TO CLEAR'],
+  tracking: {
+    [MODE.PATCH]: ['OPEN TWO HANDS TO FRAME', 'PINCH TO FREEZE A PATCH', 'PRESS M FOR PORTHOLE MODE'],
+    [MODE.PORTHOLE]: ['OPEN TWO HANDS TO FRAME', 'PINCH TO FREEZE THE FRAME', 'PRESS M FOR PATCH MODE'],
+  },
+  frozen: {
+    [MODE.PATCH]: ['GRAB A PATCH TO MOVE IT', 'PINCH TO ADD ANOTHER', 'PRESS S TO SAVE', 'FISTS TO CLEAR'],
+    [MODE.PORTHOLE]: ['THE WINDOW STAYS LIVE', 'GRAB IT TO MOVE IT', 'PRESS S TO SAVE', 'FISTS TO CLEAR'],
+  },
 };
 
 // HUD look

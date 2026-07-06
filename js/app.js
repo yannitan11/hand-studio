@@ -1,11 +1,15 @@
 // HÄND STUDIO — orchestration: camera → tracking → gesture state machine →
-// freeze patches + HUD. One mirrored render loop. Vanilla ES modules, no build.
+// freeze engine + HUD. One mirrored render loop. Vanilla ES modules, no build.
 //
-// Core loop (reference recording, first 8s):
-//   two hands frame a rect (RESIZING) → both pinch → region freezes as a
-//   pinned patch (FROZEN, survives 0 hands) → fists (or R) reset.
+// Two toggleable freeze engines (press [M] to switch — see effects.js):
+//   PATCH    — two hands frame a rect (FRAMING) → both pinch → that region
+//              stamps on as a frozen patch. Stack many.
+//   PORTHOLE — same framing/pinch, but the WHOLE frame freezes except that
+//              region, which stays a live window (the original v2 behavior).
+// Either way: grab a frozen patch/window to move it, pinch its corners (or
+// drag a corner handle) to resize, fists (or R) to clear, S to save a PNG.
 
-import { BRAND, GESTURE, FRAME, TICKER, STATUS } from './config.js';
+import { BRAND, GESTURE, FRAME, TICKER, STATUS, MODE, DEFAULT_MODE } from './config.js';
 import { startCamera, CameraError } from './camera.js';
 import { loadTracker, detect } from './tracking.js';
 import * as G from './gestures.js';
@@ -29,19 +33,21 @@ let running = false;
 let trackerReady = false;
 
 let status = STATUS.IDLE;
+let mode = DEFAULT_MODE; // MODE.PATCH | MODE.PORTHOLE — toggled with [M]
 let bothPinched = false; // latched until both hands release
 let pinchHold = 0;
 let pinchMiss = 0; // consecutive noisy frames tolerated mid-pinch-hold
 let fistHold = 0;
 let freezeGraceUntil = 0; // fist-reset ignored until this timestamp
 
-// grab-to-move / resize a frozen patch with the hands
-let grab = null; // { mode:'move'|'resize', patch, lastX, lastY }
-let grabMiss = 0; // frames a held patch survives losing its pinch
+// grab-to-move / resize the frozen thing (a patch, or the porthole window)
+// with the hands. `target` is either a patch object or fx.portholeWindow.
+let grab = null; // { kind:'move'|'resize', target, lastX, lastY }
+let grabMiss = 0; // frames a held target survives losing its pinch
 
-// mouse/touch fallback: create a rect, or grab an existing patch
+// mouse/touch fallback: create a rect, or grab an existing target
 let drag = null; // {x0, y0, x1, y1, mode:'create'} in device px
-let mgrab = null; // { mode:'move'|'resize', patch, corner, offX, offY }
+let mgrab = null; // { kind:'move'|'resize', target, corner, offX, offY }
 
 // fps
 let fps = 0;
@@ -75,6 +81,52 @@ function rectFromPoints(a, b) {
   const x = Math.min(a.x, b.x);
   const y = Math.min(a.y, b.y);
   return { x, y, w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) };
+}
+
+function pointInRect(r, x, y) {
+  return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+}
+
+// ── Mode-dispatch helpers: same interaction code, different engine underneath ──
+// PATCH mode has many targets (fx.patches); PORTHOLE mode has at most one
+// (fx.portholeWindow). These let the grab/resize/capture code stay identical.
+function targetAt(x, y) {
+  if (mode === MODE.PORTHOLE) {
+    const w = fx.portholeWindow;
+    return w && pointInRect(w, x, y) ? w : null;
+  }
+  return fx.patchAt(x, y);
+}
+function bringToFront(target) {
+  if (mode === MODE.PATCH) fx.bringToFront(target);
+}
+function moveTarget(target, dx, dy) {
+  if (mode === MODE.PORTHOLE) fx.movePortholeWindow(dx, dy);
+  else fx.movePatch(target, dx, dy);
+}
+function resizeTargetRect(target, rect, minPx) {
+  if (mode === MODE.PORTHOLE) fx.setPortholeRect(rect, minPx);
+  else fx.setPatchRect(target, rect, minPx);
+}
+function doFreeze(rect, now) {
+  if (mode === MODE.PORTHOLE) fx.freezePorthole(rect, now);
+  else fx.freeze(rect, now, FRAME.maxPatches);
+}
+
+// Switching engines mid-session would leave the old engine's state stranded
+// (and stale patches/porthole drawn together would be confusing) — clear on toggle.
+function toggleMode() {
+  mode = mode === MODE.PATCH ? MODE.PORTHOLE : MODE.PATCH;
+  fx.reset();
+  grab = null;
+  mgrab = null;
+  drag = null;
+  bothPinched = false;
+  pinchHold = 0;
+  pinchMiss = 0;
+  fistHold = 0;
+  freezeGraceUntil = 0;
+  rEngine.textContent = mode === MODE.PORTHOLE ? 'PORTHOLE' : 'PATCH';
 }
 
 // ── Per-frame step ──
@@ -118,7 +170,7 @@ function step(now) {
       pinchHold++;
       pinchMiss = 0;
       if (pinchHold >= FRAME.captureHoldFrames) {
-        fx.freeze(frameRect, now, FRAME.maxPatches); // stamp a new frozen patch
+        doFreeze(frameRect, now); // stamp a patch, or freeze the whole frame, per mode
         bothPinched = true; // latch: no re-capture until both release
         pinchHold = 0;
         freezeGraceUntil = now + GESTURE.postFreezeGraceMs;
@@ -142,9 +194,9 @@ function step(now) {
     }
     if (bothPinched && bothRelease) bothPinched = false;
 
-    // One-hand pinch landing inside a patch → grab it to move.
+    // One-hand pinch landing inside a target → grab it to move.
     if (!bothPinch) {
-      const h = handInfo.find((x) => x.pinched && fx.patchAt(x.pt.x, x.pt.y));
+      const h = handInfo.find((x) => x.pinched && targetAt(x.pt.x, x.pt.y));
       if (h) startHandMove(h);
     }
   }
@@ -174,12 +226,19 @@ function step(now) {
   else status = STATUS.IDLE;
 
   // ── Draw ──
-  fx.compositeTo(ctx);
-  const active = grab?.patch || mgrab?.patch || null;
-  for (let i = 0; i < fx.patches.length; i++) {
-    const p = fx.patches[i];
-    HUD.drawPatchFlash(ctx, p, now);
-    HUD.drawPatch(ctx, p, i, p === active);
+  fx.compositeTo(ctx, mode);
+  if (mode === MODE.PORTHOLE) {
+    if (fx.portholeWindow) {
+      HUD.drawPortholeFlash(ctx, now, fx.portholeWindow.flashAt, canvas.width, canvas.height);
+      HUD.drawPortholeWindow(ctx, fx.portholeWindow, !!(grab || mgrab));
+    }
+  } else {
+    const active = grab?.target || mgrab?.target || null;
+    for (let i = 0; i < fx.patches.length; i++) {
+      const p = fx.patches[i];
+      HUD.drawPatchFlash(ctx, p, now);
+      HUD.drawPatch(ctx, p, i, p === active);
+    }
   }
   HUD.drawSkeleton(ctx, handsPx);
 
@@ -212,7 +271,7 @@ function step(now) {
   updateHud(hands.length);
 }
 
-// ── Hand grab helpers (move / resize a frozen patch) ──
+// ── Hand grab helpers (move / resize a frozen patch or the porthole window) ──
 function nearestPinched(pinched, x, y) {
   let best = null;
   let bestD = Infinity;
@@ -227,22 +286,22 @@ function nearestPinched(pinched, x, y) {
 }
 
 function startHandMove(h) {
-  const patch = fx.patchAt(h.pt.x, h.pt.y);
-  if (!patch) return;
-  fx.bringToFront(patch);
-  grab = { mode: 'move', patch, lastX: h.pt.x, lastY: h.pt.y };
+  const target = targetAt(h.pt.x, h.pt.y);
+  if (!target) return;
+  bringToFront(target);
+  grab = { kind: 'move', target, lastX: h.pt.x, lastY: h.pt.y };
   grabMiss = 0;
 }
 
-// Two pinched hands inside the SAME patch → resize it by its two corners.
+// Two pinched hands inside the SAME target → resize it by its two corners.
 function startHandResize(handInfo) {
   const pinched = handInfo.filter((h) => h.pinched);
   if (pinched.length < 2) return false;
-  const pa = fx.patchAt(pinched[0].pt.x, pinched[0].pt.y);
-  const pb = fx.patchAt(pinched[1].pt.x, pinched[1].pt.y);
-  if (pa && pa === pb) {
-    fx.bringToFront(pa);
-    grab = { mode: 'resize', patch: pa };
+  const ta = targetAt(pinched[0].pt.x, pinched[0].pt.y);
+  const tb = targetAt(pinched[1].pt.x, pinched[1].pt.y);
+  if (ta && ta === tb) {
+    bringToFront(ta);
+    grab = { kind: 'resize', target: ta };
     grabMiss = 0;
     applyHandResize(pinched);
     return true;
@@ -252,15 +311,15 @@ function startHandResize(handInfo) {
 
 function applyHandResize(pinched) {
   const rect = rectFromPoints(pinched[0].pt, pinched[1].pt);
-  fx.setPatchRect(grab.patch, rect, FRAME.minSizePx * dpr);
+  resizeTargetRect(grab.target, rect, FRAME.minSizePx * dpr);
 }
 
 function continueHandGrab(handInfo) {
   const pinched = handInfo.filter((h) => h.pinched);
-  if (grab.mode === 'move') {
+  if (grab.kind === 'move') {
     const h = nearestPinched(pinched, grab.lastX, grab.lastY);
     if (h) {
-      fx.movePatch(grab.patch, h.pt.x - grab.lastX, h.pt.y - grab.lastY);
+      moveTarget(grab.target, h.pt.x - grab.lastX, h.pt.y - grab.lastY);
       grab.lastX = h.pt.x;
       grab.lastY = h.pt.y;
       grabMiss = 0;
@@ -287,6 +346,8 @@ const rStatus = el('rStatus');
 const rFps = el('rFps');
 const rInput = el('rInput');
 const rMode = el('rMode');
+const rEngine = el('rEngine');
+rEngine.textContent = mode === MODE.PORTHOLE ? 'PORTHOLE' : 'PATCH';
 
 function updateHud(nHands) {
   if (rStatus.textContent !== status) rStatus.textContent = status;
@@ -298,8 +359,14 @@ function updateHud(nHands) {
   rFps.textContent = String(Math.round(fps)).padStart(2, '0');
   rInput.textContent = `${nHands} HAND${nHands === 1 ? '' : 'S'}`;
 
-  const n = fx.patches.length;
-  const modeText = n ? `${String(n).padStart(2, '0')} FROZEN` : 'NORMAL';
+  const modeText =
+    mode === MODE.PORTHOLE
+      ? fx.portholeWindow
+        ? 'LIVE WINDOW'
+        : 'NORMAL'
+      : fx.patches.length
+        ? `${String(fx.patches.length).padStart(2, '0')} FROZEN`
+        : 'NORMAL';
   if (rMode.textContent !== modeText) rMode.textContent = modeText;
 }
 
@@ -317,9 +384,9 @@ function frame() {
 // ── State-aware ticker ──
 let tick = 0;
 function tickerLines() {
-  if (fx.isFrozen) return TICKER.frozen;
+  if (fx.isFrozen) return TICKER.frozen[mode];
   if (status === STATUS.IDLE) return TICKER.idle;
-  return TICKER.tracking;
+  return TICKER.tracking[mode];
 }
 function startTicker() {
   const node = el('ticker');
@@ -334,10 +401,11 @@ function startTicker() {
   }, TICKER.intervalMs);
 }
 
-// Save the current collage (base + patches, no HUD chrome) as a PNG.
+// Save the current frame (no HUD chrome) as a PNG — the collage in PATCH
+// mode, or the frozen-frame-plus-live-window composite in PORTHOLE mode.
 async function saveSnapshot() {
   if (!fx.isFrozen) return;
-  const blob = await fx.snapshotBlob();
+  const blob = await fx.snapshotBlob(mode);
   if (!blob) return;
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -349,28 +417,28 @@ async function saveSnapshot() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// Resize a patch by dragging one corner, opposite corner pinned.
+// Resize a target by dragging one corner, opposite corner pinned.
 function resizeByCorner(g, p) {
-  const patch = g.patch;
-  let left = patch.x;
-  let top = patch.y;
-  let right = patch.x + patch.w;
-  let bottom = patch.y + patch.h;
+  const t = g.target;
+  let left = t.x;
+  let top = t.y;
+  let right = t.x + t.w;
+  let bottom = t.y + t.h;
   if (g.corner === 'tl') { left = p.x; top = p.y; }
   else if (g.corner === 'tr') { right = p.x; top = p.y; }
   else if (g.corner === 'bl') { left = p.x; bottom = p.y; }
   else { right = p.x; bottom = p.y; }
-  fx.setPatchRect(
-    patch,
+  resizeTargetRect(
+    t,
     { x: Math.min(left, right), y: Math.min(top, bottom), w: Math.abs(right - left), h: Math.abs(bottom - top) },
     FRAME.minSizePx * dpr
   );
 }
 
 // ── Input: keyboard + mouse/touch fallback ──
-//   empty space → drag a rect to freeze a new patch
-//   inside a patch → drag to move it · corner → drag to resize
-//   [S] save PNG · [R] clear
+//   empty space → drag a rect to freeze (a new patch, or the porthole window)
+//   inside a target → drag to move it · corner → drag to resize
+//   [M] switch mode · [S] save PNG · [R] clear
 function bindInput() {
   window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
@@ -379,6 +447,8 @@ function bindInput() {
       grab = null;
     } else if (k === 's') {
       saveSnapshot();
+    } else if (k === 'm') {
+      toggleMode();
     }
   });
 
@@ -390,22 +460,23 @@ function bindInput() {
   const down = (e) => {
     const p = pt(e);
     const handle = FRAME.handleGrabPx * dpr;
-    // corner of a patch → resize
-    for (let i = fx.patches.length - 1; i >= 0; i--) {
-      const patch = fx.patches[i];
-      const corner = fx.cornerAt(patch, p.x, p.y, handle);
+    const targets = mode === MODE.PORTHOLE ? (fx.portholeWindow ? [fx.portholeWindow] : []) : fx.patches;
+    // corner of a target → resize
+    for (let i = targets.length - 1; i >= 0; i--) {
+      const t = targets[i];
+      const corner = fx.cornerAt(t, p.x, p.y, handle);
       if (corner) {
-        fx.bringToFront(patch);
-        mgrab = { mode: 'resize', patch, corner };
+        bringToFront(t);
+        mgrab = { kind: 'resize', target: t, corner };
         drag = null;
         return;
       }
     }
-    // inside a patch → move
-    const patch = fx.patchAt(p.x, p.y);
-    if (patch) {
-      fx.bringToFront(patch);
-      mgrab = { mode: 'move', patch, offX: p.x - patch.x, offY: p.y - patch.y };
+    // inside a target → move
+    const t = targetAt(p.x, p.y);
+    if (t) {
+      bringToFront(t);
+      mgrab = { kind: 'move', target: t, offX: p.x - t.x, offY: p.y - t.y };
       drag = null;
       return;
     }
@@ -415,12 +486,8 @@ function bindInput() {
   const move = (e) => {
     const p = pt(e);
     if (mgrab) {
-      if (mgrab.mode === 'move') {
-        fx.movePatch(
-          mgrab.patch,
-          p.x - mgrab.offX - mgrab.patch.x,
-          p.y - mgrab.offY - mgrab.patch.y
-        );
+      if (mgrab.kind === 'move') {
+        moveTarget(mgrab.target, p.x - mgrab.offX - mgrab.target.x, p.y - mgrab.offY - mgrab.target.y);
       } else {
         resizeByCorner(mgrab, p);
       }
@@ -440,7 +507,7 @@ function bindInput() {
     const min = FRAME.minSizePx * dpr;
     if (r.w > min && r.h > min && running) {
       const now = performance.now();
-      fx.freeze(r, now, FRAME.maxPatches);
+      doFreeze(r, now);
       freezeGraceUntil = now + GESTURE.postFreezeGraceMs;
     }
     drag = null;

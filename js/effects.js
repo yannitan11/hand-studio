@@ -1,7 +1,18 @@
-// The visual engine. Two hands drag out a rectangle; pinching stamps that
-// region as a FROZEN patch — a still snapshot of that moment — onto the live
-// feed. Stack many patches (each captured at a different instant), grab one to
-// move it, pinch its corners to resize, and save the whole collage as a PNG.
+// The visual engine, two swappable modes over the same live base layer:
+//
+//   PATCH mode — pinch stamps the framed region as a FROZEN patch (a still
+//     snapshot of that moment) onto the live feed. Stack many, grab one to
+//     move it, pinch its corners to resize, save the whole collage as a PNG.
+//
+//   PORTHOLE mode — pinch freezes the ENTIRE frame as a snapshot, except the
+//     framed region, which stays a live porthole onto the camera. Only one
+//     porthole at a time; the next pinch replaces it.
+//
+// Both modes' state live side by side here; only one is drawn/saved at a
+// time, picked by the `mode` passed to compositeTo/snapshotBlob. Switching
+// modes is expected to reset() first so they don't get composited together.
+
+import { MODE } from './config.js';
 
 function makeCanvas(w, h) {
   const c = document.createElement('canvas');
@@ -14,16 +25,23 @@ export class Effects {
   constructor() {
     this.base = makeCanvas(2, 2); // live frame, mirrored
     this.baseCtx = this.base.getContext('2d');
-    // Each patch: { canvas, x, y, w, h, flashAt }. canvas holds the frozen
-    // pixels at capture size; x/y/w/h are its current placement (device px).
+    // PATCH mode: each { canvas, x, y, w, h, flashAt }. canvas holds the
+    // frozen pixels at capture size; x/y/w/h are its current placement.
     this.patches = [];
+    // PORTHOLE mode: one full-screen snapshot + one live window rect.
+    this.frozenFull = makeCanvas(2, 2);
+    this.frozenFullCtx = this.frozenFull.getContext('2d');
+    this.portholeWindow = null; // {x, y, w, h, flashAt}
   }
 
   resize(w, h) {
     this.base.width = w;
     this.base.height = h;
-    // stale coordinates — drop every patch on resize
+    this.frozenFull.width = w;
+    this.frozenFull.height = h;
+    // stale coordinates in both modes — drop everything
     this.patches = [];
+    this.portholeWindow = null;
   }
 
   get width() {
@@ -34,7 +52,7 @@ export class Effects {
   }
 
   get isFrozen() {
-    return this.patches.length > 0;
+    return this.patches.length > 0 || !!this.portholeWindow;
   }
 
   // Draw the current camera frame (mirrored, cover-fit) into the base layer.
@@ -126,24 +144,75 @@ export class Effects {
     if (i >= 0) this.patches.splice(i, 1);
   }
 
-  reset() {
-    this.patches = [];
+  // PORTHOLE mode: snapshot the whole current frame, keep `rect` as the one
+  // live window (replaces any previous porthole window).
+  freezePorthole(rect, now) {
+    const w = this.base.width;
+    const h = this.base.height;
+    let x0 = Math.max(0, Math.floor(rect.x));
+    let y0 = Math.max(0, Math.floor(rect.y));
+    let x1 = Math.min(w, Math.ceil(rect.x + rect.w));
+    let y1 = Math.min(h, Math.ceil(rect.y + rect.h));
+    const ww = x1 - x0;
+    const wh = y1 - y0;
+    if (ww < 2 || wh < 2) return null;
+    this.frozenFullCtx.setTransform(1, 0, 0, 1, 0, 0);
+    this.frozenFullCtx.clearRect(0, 0, w, h);
+    this.frozenFullCtx.drawImage(this.base, 0, 0);
+    this.portholeWindow = { x: x0, y: y0, w: ww, h: wh, flashAt: now };
+    return this.portholeWindow;
   }
 
-  // Live base everywhere → each frozen patch stamped on top, oldest first.
-  compositeTo(ctx) {
+  // Move the porthole window by (dx, dy), clamped to stay fully on-canvas.
+  movePortholeWindow(dx, dy) {
+    const p = this.portholeWindow;
+    if (!p) return;
+    p.x = Math.max(0, Math.min(this.base.width - p.w, p.x + dx));
+    p.y = Math.max(0, Math.min(this.base.height - p.h, p.y + dy));
+  }
+
+  // Resize the porthole window to an arbitrary rect, minimum-size clamped.
+  setPortholeRect(rect, minPx) {
+    const p = this.portholeWindow;
+    if (!p) return;
+    const min = Math.max(2, minPx || 2);
+    p.w = Math.max(min, Math.round(rect.w));
+    p.h = Math.max(min, Math.round(rect.h));
+    p.x = Math.max(0, Math.min(this.base.width - p.w, Math.round(rect.x)));
+    p.y = Math.max(0, Math.min(this.base.height - p.h, Math.round(rect.y)));
+  }
+
+  reset() {
+    this.patches = [];
+    this.portholeWindow = null;
+  }
+
+  // PATCH mode: live base everywhere → each frozen patch stamped on top.
+  // PORTHOLE mode: frozen full-screen snapshot → the live window punched
+  // back in.
+  compositeTo(ctx, mode) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (mode === MODE.PORTHOLE) {
+      if (this.portholeWindow) {
+        ctx.drawImage(this.frozenFull, 0, 0);
+        const w = this.portholeWindow;
+        ctx.drawImage(this.base, w.x, w.y, w.w, w.h, w.x, w.y, w.w, w.h);
+      } else {
+        ctx.drawImage(this.base, 0, 0);
+      }
+      return;
+    }
     ctx.drawImage(this.base, 0, 0);
     for (const p of this.patches) {
       ctx.drawImage(p.canvas, p.x, p.y, p.w, p.h);
     }
   }
 
-  // Render just the visual (base + patches, no HUD chrome) to an offscreen
-  // canvas and hand back a PNG blob for download.
-  snapshotBlob() {
+  // Render just the visual (no HUD chrome) to an offscreen canvas and hand
+  // back a PNG blob for download.
+  snapshotBlob(mode) {
     const out = makeCanvas(this.base.width, this.base.height);
-    this.compositeTo(out.getContext('2d'));
+    this.compositeTo(out.getContext('2d'), mode);
     return new Promise((resolve) => out.toBlob(resolve, 'image/png'));
   }
 }

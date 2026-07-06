@@ -104,18 +104,35 @@ export function drawGrip(ctx, p) {
   ctx.stroke();
 }
 
-// Hairline around pinned patches + a white flash right after capture.
-export function drawPatches(ctx, patches, now) {
+// The live porthole while frozen: bright bracketed outline + a "LIVE" tag,
+// so it reads as the one moving window in an otherwise-frozen frame.
+export function drawWindow(ctx, wnd) {
+  if (!wnd) return;
+  drawBox(
+    ctx,
+    {
+      ...wnd,
+      nx0: wnd.x / S,
+      ny0: wnd.y / S,
+      nx1: (wnd.x + wnd.w) / S,
+      ny1: (wnd.y + wnd.h) / S,
+    },
+    { color: HUD.box, label: 'LIVE' }
+  );
+  // pulsing dot on the label
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  for (const p of patches) {
-    const age = now - p.bornAt;
-    ctx.strokeStyle = HUD.patchEdge;
-    ctx.lineWidth = 1 * S;
-    ctx.strokeRect(p.x + 0.5, p.y + 0.5, p.w - 1, p.h - 1);
-    if (age < FRAME.flashMs) {
-      const a = 1 - age / FRAME.flashMs;
-      ctx.fillStyle = `rgba(255,255,255,${(0.85 * a).toFixed(3)})`;
-      ctx.fillRect(p.x, p.y, p.w, p.h);
-    }
-  }
+  ctx.fillStyle = HUD.grip;
+  ctx.beginPath();
+  ctx.arc(wnd.x + 30 * S, wnd.y - 11 * S, 2.4 * S, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// Full-screen camera flash right after a freeze.
+export function drawFlash(ctx, now, flashAt, w, h) {
+  const age = now - flashAt;
+  if (age < 0 || age > FRAME.flashMs) return;
+  const a = 1 - age / FRAME.flashMs;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = `rgba(255,255,255,${(0.7 * a).toFixed(3)})`;
+  ctx.fillRect(0, 0, w, h);
 }

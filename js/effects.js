@@ -1,9 +1,6 @@
-// The visual engine: a live mirrored base layer plus "frozen patches" —
-// rectangular snapshots of the feed that stay pinned over the live video
-// until reset. (This is the reference's core trick: frame a region with two
-// hands, pinch, and that slice of time sticks to the screen.)
-
-import { FRAME } from './config.js';
+// The visual engine. Two hands drag out a rectangle; pinching freezes the
+// WHOLE screen as a snapshot EXCEPT that rectangle, which stays a live
+// porthole onto the camera. (Reference recording, first 8s.)
 
 function makeCanvas(w, h) {
   const c = document.createElement('canvas');
@@ -16,13 +13,21 @@ export class Effects {
   constructor() {
     this.base = makeCanvas(2, 2); // live frame, mirrored
     this.baseCtx = this.base.getContext('2d');
-    this.patches = []; // [{x, y, w, h, canvas, bornAt}]
+    this.frozen = makeCanvas(2, 2); // full-screen snapshot taken at pinch
+    this.frozenCtx = this.frozen.getContext('2d');
+    this.isFrozen = false;
+    this.window = null; // {x, y, w, h} live porthole, device px
+    this.flashAt = -1e9;
   }
 
   resize(w, h) {
     this.base.width = w;
     this.base.height = h;
-    this.patches = []; // stale coordinates — clear on resize
+    this.frozen.width = w;
+    this.frozen.height = h;
+    // stale coordinates — drop any freeze on resize
+    this.isFrozen = false;
+    this.window = null;
   }
 
   get width() {
@@ -30,9 +35,6 @@ export class Effects {
   }
   get height() {
     return this.base.height;
-  }
-  get hasPatches() {
-    return this.patches.length > 0;
   }
 
   // Draw the current camera frame (mirrored, cover-fit) into the base layer.
@@ -50,33 +52,40 @@ export class Effects {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 
-  // Snapshot a rect (device px) of the base into a pinned patch.
-  freezeRegion(rect, now) {
+  // Freeze the whole frame now, keeping `rect` as a live porthole.
+  freeze(rect, now) {
+    const w = this.base.width;
+    const h = this.base.height;
+    // clamp the window to the canvas
     let x0 = Math.max(0, Math.floor(rect.x));
     let y0 = Math.max(0, Math.floor(rect.y));
-    let x1 = Math.min(this.base.width, Math.ceil(rect.x + rect.w));
-    let y1 = Math.min(this.base.height, Math.ceil(rect.y + rect.h));
-    const w = x1 - x0;
-    const h = y1 - y0;
-    if (w < 2 || h < 2) return null;
-    const canvas = makeCanvas(w, h);
-    canvas.getContext('2d').drawImage(this.base, x0, y0, w, h, 0, 0, w, h);
-    const patch = { x: x0, y: y0, w, h, canvas, bornAt: now };
-    this.patches.push(patch);
-    if (this.patches.length > FRAME.maxPatches) this.patches.shift();
-    return patch;
+    let x1 = Math.min(w, Math.ceil(rect.x + rect.w));
+    let y1 = Math.min(h, Math.ceil(rect.y + rect.h));
+    const ww = x1 - x0;
+    const wh = y1 - y0;
+    if (ww < 2 || wh < 2) return null;
+    this.frozenCtx.setTransform(1, 0, 0, 1, 0, 0);
+    this.frozenCtx.clearRect(0, 0, w, h);
+    this.frozenCtx.drawImage(this.base, 0, 0);
+    this.window = { x: x0, y: y0, w: ww, h: wh };
+    this.isFrozen = true;
+    this.flashAt = now;
+    return this.window;
   }
 
   reset() {
-    this.patches = [];
+    this.isFrozen = false;
+    this.window = null;
   }
 
-  // Draw base + all pinned patches to the visible canvas.
+  // base everywhere → frozen snapshot on top → live porthole punched back in.
   compositeTo(ctx) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.drawImage(this.base, 0, 0);
-    for (const p of this.patches) {
-      ctx.drawImage(p.canvas, p.x, p.y);
+    if (this.isFrozen && this.window) {
+      ctx.drawImage(this.frozen, 0, 0);
+      const wnd = this.window;
+      ctx.drawImage(this.base, wnd.x, wnd.y, wnd.w, wnd.h, wnd.x, wnd.y, wnd.w, wnd.h);
     }
   }
 }

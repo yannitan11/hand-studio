@@ -99,7 +99,7 @@ function step(now) {
     if (!bothPinched && framing && pinchedNow) {
       pinchHold++;
       if (pinchHold >= FRAME.captureHoldFrames) {
-        fx.freezeRegion(frameRect, now);
+        fx.freeze(frameRect, now); // freeze everything but this window
         bothPinched = true; // latch: no re-capture until both release
         pinchHold = 0;
       }
@@ -113,7 +113,7 @@ function step(now) {
   }
 
   // ── Fists → reset ──
-  if (fx.hasPatches && hands.length > 0 && hands.every((lm) => G.isFist(lm))) {
+  if (fx.isFrozen && hands.length > 0 && hands.every((lm) => G.isFist(lm))) {
     fistHold++;
     if (fistHold >= GESTURE.fistHoldFrames) {
       fx.reset();
@@ -125,13 +125,14 @@ function step(now) {
 
   // ── Status resolution ──
   if (framing) status = STATUS.RESIZING;
-  else if (fx.hasPatches) status = STATUS.FROZEN;
+  else if (fx.isFrozen) status = STATUS.FROZEN;
   else if (hands.length) status = STATUS.TRACKING;
   else status = STATUS.IDLE;
 
   // ── Draw ──
   fx.compositeTo(ctx);
-  HUD.drawPatches(ctx, fx.patches, now);
+  HUD.drawWindow(ctx, fx.window);
+  HUD.drawFlash(ctx, now, fx.flashAt, canvas.width, canvas.height);
   HUD.drawSkeleton(ctx, handsPx);
 
   if (frameRect && framing) {
@@ -183,8 +184,7 @@ function updateHud(nHands) {
   rFps.textContent = String(Math.round(fps)).padStart(2, '0');
   rInput.textContent = `${nHands} HAND${nHands === 1 ? '' : 'S'}`;
 
-  const n = fx.patches.length;
-  const modeText = n > 0 ? `FREEZE ×${n}` : 'NORMAL';
+  const modeText = fx.isFrozen ? 'LIVE WINDOW' : 'NORMAL';
   if (rMode.textContent !== modeText) rMode.textContent = modeText;
 }
 
@@ -202,7 +202,7 @@ function frame() {
 // ── State-aware ticker ──
 let tick = 0;
 function tickerLines() {
-  if (fx.hasPatches) return TICKER.frozen;
+  if (fx.isFrozen) return TICKER.frozen;
   if (status === STATUS.IDLE) return TICKER.idle;
   return TICKER.tracking;
 }
@@ -244,7 +244,7 @@ function bindInput() {
     if (!drag) return;
     const r = rectFromPoints({ x: drag.x0, y: drag.y0 }, { x: drag.x1, y: drag.y1 });
     const min = FRAME.minSizePx * dpr;
-    if (r.w > min && r.h > min && running) fx.freezeRegion(r, performance.now());
+    if (r.w > min && r.h > min && running) fx.freeze(r, performance.now());
     drag = null;
   };
   canvas.addEventListener('mousedown', down);

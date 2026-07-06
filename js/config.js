@@ -9,7 +9,7 @@
 
 export const BRAND = {
   watermark: 'HÄND · STUDIO',
-  build: 'v2.0',
+  build: 'v2.1',
 };
 
 // MediaPipe HandLandmarker (loaded from CDN at runtime).
@@ -49,8 +49,8 @@ export const FRAME = {
 export const TICKER = {
   intervalMs: 2600,
   idle: ['SHOW YOUR HANDS'],
-  tracking: ['FRAME WITH TWO HANDS', 'PINCH TO FREEZE'],
-  frozen: ['FISTS TO RESET', 'FRAME AGAIN FOR ANOTHER'],
+  tracking: ['OPEN TWO HANDS TO FRAME', 'PINCH TO FREEZE AROUND IT'],
+  frozen: ['THE WINDOW STAYS LIVE', 'FISTS TO RESET'],
 };
 
 // HUD look

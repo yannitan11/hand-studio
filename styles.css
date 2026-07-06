@@ -173,6 +173,30 @@ body {
   align-items: flex-end;
 }
 
+/* The ENGINE readout is a real button — the fixed HUD is pointer-events:none,
+   so this opts back in. Styled to sit flush with the other readouts. */
+.engine-toggle {
+  pointer-events: auto;
+  cursor: pointer;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  background: transparent;
+  border: 1px solid var(--ink-faint);
+  border-radius: 3px;
+  padding: 5px 9px;
+  margin: -6px -10px -6px 0; /* keep baseline aligned with sibling readout */
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+}
+.engine-toggle:hover {
+  border-color: var(--ink-dim);
+  background: rgba(244, 242, 236, 0.06);
+}
+.engine-toggle:active { transform: translateY(1px); }
+.engine-toggle .label {
+  color: var(--ink-dim);
+  cursor: pointer;
+}
+
 .keys {
   position: absolute;
   left: 50%;

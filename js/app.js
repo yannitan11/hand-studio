@@ -571,4 +571,5 @@ function showError(err) {
 
 el('enterBtn').addEventListener('click', boot);
 el('retryBtn').addEventListener('click', boot);
+el('engineToggle').addEventListener('click', toggleMode);
 bindInput();

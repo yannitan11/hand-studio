@@ -33,6 +33,7 @@ let bothPinched = false; // latched until both hands release
 let pinchHold = 0;
 let pinchMiss = 0; // consecutive noisy frames tolerated mid-pinch-hold
 let fistHold = 0;
+let freezeGraceUntil = 0; // fist-reset ignored until this timestamp
 
 // grab-to-move / resize a frozen patch with the hands
 let grab = null; // { mode:'move'|'resize', patch, lastX, lastY }
@@ -120,6 +121,7 @@ function step(now) {
         fx.freeze(frameRect, now, FRAME.maxPatches); // stamp a new frozen patch
         bothPinched = true; // latch: no re-capture until both release
         pinchHold = 0;
+        freezeGraceUntil = now + GESTURE.postFreezeGraceMs;
       }
     } else if (twoHands && !bothPinch) {
       // Both hands seen but not both pinched — a ratio flicker mid-hold. Give
@@ -148,7 +150,12 @@ function step(now) {
   }
 
   // ── Fists → clear everything ──
-  if (fx.isFrozen && hands.length > 0 && hands.every((lm) => G.isFist(lm))) {
+  if (
+    fx.isFrozen &&
+    now >= freezeGraceUntil &&
+    hands.length > 0 &&
+    hands.every((lm) => G.isFist(lm))
+  ) {
     fistHold++;
     if (fistHold >= GESTURE.fistHoldFrames) {
       fx.reset();
@@ -431,7 +438,11 @@ function bindInput() {
     if (!drag) return;
     const r = rectFromPoints({ x: drag.x0, y: drag.y0 }, { x: drag.x1, y: drag.y1 });
     const min = FRAME.minSizePx * dpr;
-    if (r.w > min && r.h > min && running) fx.freeze(r, performance.now(), FRAME.maxPatches);
+    if (r.w > min && r.h > min && running) {
+      const now = performance.now();
+      fx.freeze(r, now, FRAME.maxPatches);
+      freezeGraceUntil = now + GESTURE.postFreezeGraceMs;
+    }
     drag = null;
   };
   canvas.addEventListener('mousedown', down);

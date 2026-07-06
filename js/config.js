@@ -34,6 +34,10 @@ export const GESTURE = {
   // wrist. Excludes a pinch, where the index+thumb tips sit far forward.
   fistReach: 1.35,
   fistHoldFrames: 6, // frames all visible hands must hold fists to reset
+  // Releasing a pinch often means briefly curling all fingers inward before
+  // opening the hand — that residual shape can read as a fist. Ignore the
+  // fist-reset for this long after any freeze so it doesn't self-trigger.
+  postFreezeGraceMs: 700,
 };
 
 // The two-hand framing rectangle + frozen patches.
